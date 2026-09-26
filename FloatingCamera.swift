@@ -25,6 +25,7 @@ import AppKit
 import AVFoundation
 import CoreMedia
 import Carbon.HIToolbox
+import QuartzCore
 
 // MARK: - Persistence
 
@@ -45,6 +46,18 @@ private enum Pref {
     static let cameraHotkeyMods = "cam.hotkey.camera.mods"
     static let panelHotkeyCode  = "cam.hotkey.panel.code"
     static let panelHotkeyMods  = "cam.hotkey.panel.mods"
+
+    // Window animation prefs
+    static let animationMode          = "cam.animationMode"
+    static let inAnimationStyle       = "cam.inAnimationStyle"
+    static let inAnimationDuration    = "cam.inAnimationDuration"
+    static let inAnimationBounciness  = "cam.inAnimationBounciness"
+    static let outAnimationStyle      = "cam.outAnimationStyle"
+    static let outAnimationDuration   = "cam.outAnimationDuration"
+    static let outAnimationBounciness = "cam.outAnimationBounciness"
+    static let animationStyle         = "cam.animationStyle"
+    static let animationDuration      = "cam.animationDuration"
+    static let animationBounciness    = "cam.animationBounciness"
 
     // Default hotkeys
     static var defaultCameraCode: UInt32 { UInt32(kVK_ANSI_H) }
@@ -77,6 +90,67 @@ private enum Pref {
 
 // MARK: - Models
 
+enum AnimationMode: String, CaseIterable {
+    case unified     = "unified"
+    case independent = "independent"
+
+    var title: String {
+        switch self {
+        case .unified:     return "Unified (Match In & Out)"
+        case .independent: return "Independent (Custom In / Out)"
+        }
+    }
+}
+
+enum WindowAnimationStyle: String, CaseIterable {
+    case springPop          = "springPop"
+    case overshootBounce    = "overshootBounce"
+    case smoothEase         = "smoothEase"
+    case subtleZoom         = "subtleZoom"
+    case centerZoom         = "centerZoom"
+    case systemAlertPop     = "systemAlertPop"
+    case systemDocumentZoom = "systemDocumentZoom"
+    case systemUtilityPop   = "systemUtilityPop"
+    case fadeDissolve       = "fadeDissolve"
+    case slideInTop         = "slideInTop"
+    case slideInBottom      = "slideInBottom"
+    case slideInLeft        = "slideInLeft"
+    case slideInRight       = "slideInRight"
+    case systemShake        = "systemShake"
+    case pulseAttention     = "pulseAttention"
+    case none               = "none"
+
+    var title: String {
+        switch self {
+        case .springPop:          return "Spring Pop"
+        case .overshootBounce:    return "Overshoot Bounce"
+        case .smoothEase:         return "Smooth Ease"
+        case .subtleZoom:         return "Subtle Zoom"
+        case .centerZoom:         return "Center Zoom"
+        case .systemAlertPop:     return "System Alert Pop"
+        case .systemDocumentZoom: return "System Document Zoom"
+        case .systemUtilityPop:   return "System Utility Pop"
+        case .fadeDissolve:       return "Fade Dissolve"
+        case .slideInTop:         return "Slide In (Top)"
+        case .slideInBottom:      return "Slide In (Bottom)"
+        case .slideInLeft:        return "Slide In (Left)"
+        case .slideInRight:       return "Slide In (Right)"
+        case .systemShake:        return "System Shake"
+        case .pulseAttention:     return "Pulse Attention"
+        case .none:               return "Off"
+        }
+    }
+
+    var usesBounciness: Bool {
+        switch self {
+        case .springPop, .overshootBounce, .pulseAttention:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 struct CameraDeviceInfo {
     let uniqueID:      String
     let localizedName: String
@@ -106,6 +180,16 @@ struct OverlayState {
     var hoverOpacity:        Float
     var isAtNativeAspect: Bool   // current size matches camera native ratio
     var isAtDefaults:     Bool   // all appearance settings are at defaults
+    var animationMode:          AnimationMode
+    var inAnimationStyle:       WindowAnimationStyle
+    var inAnimationDuration:    Double
+    var inAnimationBounciness:  Double
+    var outAnimationStyle:      WindowAnimationStyle
+    var outAnimationDuration:   Double
+    var outAnimationBounciness: Double
+    var animationStyle:         WindowAnimationStyle { inAnimationStyle }
+    var animationDuration:      Double { inAnimationDuration }
+    var animationBounciness:    Double { inAnimationBounciness }
 }
 
 // MARK: - App Delegate
@@ -277,15 +361,17 @@ final class FloatingCameraScriptApp: NSObject, NSApplicationDelegate, NSMenuDele
         let panLabel = panCode > 0 && panelHotKeyActive
             ? "  " + ShortcutsWindowController.formatShortcut(code: panCode, mods: panMods) : ""
 
-        let camVis = previewController?.window?.isVisible ?? false
+        let camVis = previewController?.isOverlayVisible ?? previewController?.window?.isVisible ?? false
         hideCameraMenuItem?.title = (camVis ? "Hide Camera" : "Show Camera") + camLabel
         let panVis = controlPanelController?.isVisible ?? false
         showPanelMenuItem?.title  = (panVis ? "Hide Control Panel" : "Show Control Panel") + panLabel
     }
 
     @objc func toggleCameraVisibility() {
-        guard let win = previewController?.window else { return }
-        if win.isVisible { win.orderOut(nil) } else { win.makeKeyAndOrderFront(nil) }
+        guard let preview = previewController else { return }
+        preview.toggleVisibility(animated: true) { [weak self] in
+            self?.syncMenuTitles()
+        }
         syncMenuTitles()
     }
 
@@ -429,6 +515,16 @@ final class FloatingCameraScriptApp: NSObject, NSApplicationDelegate, NSMenuDele
         }
         panel.onToggleHoverOpacity  = { [weak preview] in preview?.toggleHoverOpacity() }
         panel.onSetHoverOpacity     = { [weak preview] v in preview?.setHoverOpacity(v) }
+        panel.onSetAnimationMode         = { [weak preview] m in preview?.setAnimationMode(m) }
+        panel.onSetInAnimationStyle      = { [weak preview] s in preview?.setInAnimationStyle(s) }
+        panel.onSetInAnimationDuration   = { [weak preview] d in preview?.setInAnimationDuration(d) }
+        panel.onSetInAnimationBounciness = { [weak preview] b in preview?.setInAnimationBounciness(b) }
+        panel.onSetOutAnimationStyle     = { [weak preview] s in preview?.setOutAnimationStyle(s) }
+        panel.onSetOutAnimationDuration  = { [weak preview] d in preview?.setOutAnimationDuration(d) }
+        panel.onSetOutAnimationBounciness = { [weak preview] b in preview?.setOutAnimationBounciness(b) }
+        panel.onTestInAnimation          = { [weak preview] in preview?.testInAnimation() }
+        panel.onTestOutAnimation         = { [weak preview] in preview?.testOutAnimation() }
+        panel.onTestCycleAnimation       = { [weak preview] in preview?.testFullAnimationCycle() }
         panel.onOpenShortcuts       = { [weak self] in self?.openShortcuts(nil) }
 
         previewController      = preview
@@ -474,7 +570,7 @@ final class FloatingCameraScriptApp: NSObject, NSApplicationDelegate, NSMenuDele
         }
         let isLocked     = previewController?.isLocked ?? false
         let isPanelVis   = controlPanelController?.isVisible ?? false
-        let isCamVis     = previewController?.window?.isVisible ?? true
+        let isCamVis     = previewController?.isOverlayVisible ?? previewController?.window?.isVisible ?? true
         func item(_ t: String, _ sel: Selector) -> NSMenuItem {
             let i = NSMenuItem(title: t, action: sel, keyEquivalent: ""); i.target = self; return i
         }
@@ -752,6 +848,31 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     private var hoverOpacityValue:   Float   = 0.15
     private var isDragging:          Bool    = false
 
+    private var animationMode:          AnimationMode        = .unified
+    private var inAnimationStyle:       WindowAnimationStyle = .springPop
+    private var inAnimationDuration:    Double               = 0.25
+    private var inAnimationBounciness:  Double               = 0.50
+    private var outAnimationStyle:      WindowAnimationStyle = .springPop
+    private var outAnimationDuration:   Double               = 0.25
+    private var outAnimationBounciness: Double               = 0.50
+    private var animationTimer:      Timer?
+    private(set) var isAnimatingVisibility: Bool = false
+    private(set) var isOverlayVisible:      Bool = true
+    private var targetRestingFrame:         NSRect?
+
+    var animationStyle: WindowAnimationStyle {
+        get { inAnimationStyle }
+        set { inAnimationStyle = newValue; if animationMode == .unified { outAnimationStyle = newValue } }
+    }
+    var animationDuration: Double {
+        get { inAnimationDuration }
+        set { inAnimationDuration = newValue; if animationMode == .unified { outAnimationDuration = newValue } }
+    }
+    var animationBounciness: Double {
+        get { inAnimationBounciness }
+        set { inAnimationBounciness = newValue; if animationMode == .unified { outAnimationBounciness = newValue } }
+    }
+
     var onStateChanged: (() -> Void)?
     var onContextMenu:  (() -> NSMenu)?
 
@@ -766,6 +887,38 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         if d.object(forKey: Pref.isAspectLocked)     != nil { isAspectLocked     = d.bool(forKey: Pref.isAspectLocked) }
         if d.object(forKey: Pref.hoverOpacityEnabled) != nil { hoverOpacityEnabled = d.bool(forKey: Pref.hoverOpacityEnabled) }
         if d.object(forKey: Pref.hoverOpacity)        != nil { hoverOpacityValue   = d.float(forKey: Pref.hoverOpacity) }
+
+        if let rawMode = d.string(forKey: Pref.animationMode),
+           let mode = AnimationMode(rawValue: rawMode) {
+            animationMode = mode
+        }
+        let legacyStyle = d.string(forKey: Pref.animationStyle).flatMap(WindowAnimationStyle.init(rawValue:)) ?? .springPop
+        let legacyDuration = d.object(forKey: Pref.animationDuration) != nil ? d.double(forKey: Pref.animationDuration) : 0.25
+        let legacyBounce = d.object(forKey: Pref.animationBounciness) != nil ? d.double(forKey: Pref.animationBounciness) : 0.50
+
+        if let rawIn = d.string(forKey: Pref.inAnimationStyle), let style = WindowAnimationStyle(rawValue: rawIn) {
+            inAnimationStyle = style
+        } else {
+            inAnimationStyle = legacyStyle
+        }
+        inAnimationDuration = d.object(forKey: Pref.inAnimationDuration) != nil
+            ? max(0.15, min(1.00, d.double(forKey: Pref.inAnimationDuration)))
+            : max(0.15, min(1.00, legacyDuration))
+        inAnimationBounciness = d.object(forKey: Pref.inAnimationBounciness) != nil
+            ? max(0.0, min(1.0, d.double(forKey: Pref.inAnimationBounciness)))
+            : max(0.0, min(1.0, legacyBounce))
+
+        if let rawOut = d.string(forKey: Pref.outAnimationStyle), let style = WindowAnimationStyle(rawValue: rawOut) {
+            outAnimationStyle = style
+        } else {
+            outAnimationStyle = legacyStyle
+        }
+        outAnimationDuration = d.object(forKey: Pref.outAnimationDuration) != nil
+            ? max(0.15, min(1.00, d.double(forKey: Pref.outAnimationDuration)))
+            : max(0.15, min(1.00, legacyDuration))
+        outAnimationBounciness = d.object(forKey: Pref.outAnimationBounciness) != nil
+            ? max(0.0, min(1.0, d.double(forKey: Pref.outAnimationBounciness)))
+            : max(0.0, min(1.0, legacyBounce))
 
         let initialFrame: NSRect = {
             if let saved = Pref.restoreFrame() { return saved }
@@ -787,6 +940,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         let win = PreviewWindow(contentRect: initialFrame, styleMask: [.borderless, .resizable],
                                 backing: .buffered, defer: false)
         super.init(window: win)
+        targetRestingFrame = initialFrame
 
         win.delegate                    = self
         win.level                       = .floating
@@ -816,8 +970,9 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         contentView.onHoverMirror = { [weak self] in self?.toggleMirror() }
         contentView.onHoverCenter = { [weak self] in self?.centerOverlay() }
         contentView.onHoverHide   = { [weak self] in
-            self?.window?.orderOut(nil)
-            self?.onStateChanged?()
+            self?.hideOverlay(animated: true) { [weak self] in
+                self?.onStateChanged?()
+            }
         }
 
         applyAspectConstraint()
@@ -829,10 +984,10 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
 
     required init?(coder: NSCoder) { fatalError("unused") }
 
-    func present() { window?.makeKeyAndOrderFront(nil) }
+    func present(animated: Bool = false) { showOverlay(animated: animated) }
 
     func currentState() -> OverlayState {
-        let f  = window?.frame ?? .zero
+        let f  = targetRestingFrame ?? window?.frame ?? .zero
         let sf = window?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
         // Read opacity from the persisted preference, NOT from window.alphaValue.
         // window.alphaValue may be at a transient hover-dim value when an animation
@@ -851,7 +1006,14 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             hoverOpacityEnabled: hoverOpacityEnabled,
             hoverOpacity:        hoverOpacityValue,
             isAtNativeAspect: isAtNativeAspect,
-            isAtDefaults:     isAtDefaults)
+            isAtDefaults:     isAtDefaults,
+            animationMode:          animationMode,
+            inAnimationStyle:       inAnimationStyle,
+            inAnimationDuration:    inAnimationDuration,
+            inAnimationBounciness:  inAnimationBounciness,
+            outAnimationStyle:      outAnimationStyle,
+            outAnimationDuration:   outAnimationDuration,
+            outAnimationBounciness: outAnimationBounciness)
     }
 
     // MARK: Public API
@@ -921,6 +1083,13 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     func resetDefaults() {
         setCornerRadius(Self.defaultCornerRadius)
         setOpacity(1.0)
+        setAnimationMode(.unified)
+        setInAnimationStyle(.springPop)
+        setInAnimationDuration(0.25)
+        setInAnimationBounciness(0.50)
+        setOutAnimationStyle(.springPop)
+        setOutAnimationDuration(0.25)
+        setOutAnimationBounciness(0.50)
         if isMirrored { toggleMirror() }
         if hoverOpacityEnabled { toggleHoverOpacity() }
         // Reset size to a sensible default at the native camera aspect ratio
@@ -933,19 +1102,27 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         setFrameRelockingAspect(NSRect(x: f.minX, y: f.minY, width: defaultW, height: defaultH),
                                 lockTo: cameraAspectRatio)
         UserDefaults.standard.set(true, forKey: Pref.isAspectLocked)
+        targetRestingFrame = win.frame
         persistFrame(); onStateChanged?()
     }
 
     /// True when all appearance settings are already at their defaults.
     var isAtDefaults: Bool {
         let sizeOk: Bool
-        if let f = window?.frame {
+        if let f = targetRestingFrame ?? window?.frame {
             let ratio = cameraAspectRatio.width / max(1, cameraAspectRatio.height)
             let expectedH = (Self.defaultWidth / ratio).rounded()
             sizeOk = abs(f.width - Self.defaultWidth) < 1 && abs(f.height - expectedH) < 1
         } else {
             sizeOk = true
         }
+        let animOk = (animationMode == .unified)
+            && (inAnimationStyle == .springPop)
+            && abs(inAnimationDuration - 0.25) < 0.01
+            && abs(inAnimationBounciness - 0.50) < 0.01
+            && (outAnimationStyle == .springPop)
+            && abs(outAnimationDuration - 0.25) < 0.01
+            && abs(outAnimationBounciness - 0.50) < 0.01
         // Tolerance, not ==: the radius slider is continuous, so dragging back to the
         // default can land on 15.9999 and leave Reset stuck enabled.
         return abs(cornerRadiusValue - Self.defaultCornerRadius) < 0.5
@@ -955,9 +1132,649 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
             && !hoverOpacityEnabled
             && abs((window?.alphaValue ?? 1.0) - 1.0) < 0.01
             && sizeOk
+            && animOk
     }
 
-    func centerOverlay() { window?.center(); persistFrame(); onStateChanged?() }
+    // MARK: - Animation API
+
+    func setAnimationMode(_ mode: AnimationMode) {
+        animationMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Pref.animationMode)
+        if mode == .unified {
+            outAnimationStyle = inAnimationStyle
+            outAnimationDuration = inAnimationDuration
+            outAnimationBounciness = inAnimationBounciness
+            UserDefaults.standard.set(outAnimationStyle.rawValue, forKey: Pref.outAnimationStyle)
+            UserDefaults.standard.set(outAnimationDuration, forKey: Pref.outAnimationDuration)
+            UserDefaults.standard.set(outAnimationBounciness, forKey: Pref.outAnimationBounciness)
+        }
+        onStateChanged?()
+    }
+
+    func setInAnimationStyle(_ style: WindowAnimationStyle) {
+        inAnimationStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: Pref.inAnimationStyle)
+        UserDefaults.standard.set(style.rawValue, forKey: Pref.animationStyle)
+        if animationMode == .unified {
+            outAnimationStyle = style
+            UserDefaults.standard.set(style.rawValue, forKey: Pref.outAnimationStyle)
+        }
+        onStateChanged?()
+    }
+
+    func setInAnimationDuration(_ duration: Double) {
+        inAnimationDuration = max(0.15, min(1.00, duration))
+        UserDefaults.standard.set(inAnimationDuration, forKey: Pref.inAnimationDuration)
+        UserDefaults.standard.set(inAnimationDuration, forKey: Pref.animationDuration)
+        if animationMode == .unified {
+            outAnimationDuration = inAnimationDuration
+            UserDefaults.standard.set(outAnimationDuration, forKey: Pref.outAnimationDuration)
+        }
+        onStateChanged?()
+    }
+
+    func setInAnimationBounciness(_ bounciness: Double) {
+        inAnimationBounciness = max(0.0, min(1.0, bounciness))
+        UserDefaults.standard.set(inAnimationBounciness, forKey: Pref.inAnimationBounciness)
+        UserDefaults.standard.set(inAnimationBounciness, forKey: Pref.animationBounciness)
+        if animationMode == .unified {
+            outAnimationBounciness = inAnimationBounciness
+            UserDefaults.standard.set(outAnimationBounciness, forKey: Pref.outAnimationBounciness)
+        }
+        onStateChanged?()
+    }
+
+    func setOutAnimationStyle(_ style: WindowAnimationStyle) {
+        outAnimationStyle = style
+        UserDefaults.standard.set(style.rawValue, forKey: Pref.outAnimationStyle)
+        if animationMode == .unified {
+            inAnimationStyle = style
+            UserDefaults.standard.set(style.rawValue, forKey: Pref.inAnimationStyle)
+            UserDefaults.standard.set(style.rawValue, forKey: Pref.animationStyle)
+        }
+        onStateChanged?()
+    }
+
+    func setOutAnimationDuration(_ duration: Double) {
+        outAnimationDuration = max(0.15, min(1.00, duration))
+        UserDefaults.standard.set(outAnimationDuration, forKey: Pref.outAnimationDuration)
+        if animationMode == .unified {
+            inAnimationDuration = outAnimationDuration
+            UserDefaults.standard.set(inAnimationDuration, forKey: Pref.inAnimationDuration)
+            UserDefaults.standard.set(inAnimationDuration, forKey: Pref.animationDuration)
+        }
+        onStateChanged?()
+    }
+
+    func setOutAnimationBounciness(_ bounciness: Double) {
+        outAnimationBounciness = max(0.0, min(1.0, bounciness))
+        UserDefaults.standard.set(outAnimationBounciness, forKey: Pref.outAnimationBounciness)
+        if animationMode == .unified {
+            inAnimationBounciness = outAnimationBounciness
+            UserDefaults.standard.set(inAnimationBounciness, forKey: Pref.inAnimationBounciness)
+            UserDefaults.standard.set(inAnimationBounciness, forKey: Pref.animationBounciness)
+        }
+        onStateChanged?()
+    }
+
+    func setAnimationStyle(_ style: WindowAnimationStyle) { setInAnimationStyle(style) }
+    func setAnimationDuration(_ duration: Double) { setInAnimationDuration(duration) }
+    func setAnimationBounciness(_ bounciness: Double) { setInAnimationBounciness(bounciness) }
+
+    func testInAnimation() {
+        if isOverlayVisible {
+            hideOverlay(animated: false) { [weak self] in
+                self?.showOverlay(animated: true)
+            }
+        } else {
+            showOverlay(animated: true)
+        }
+    }
+
+    func testOutAnimation() {
+        if isOverlayVisible {
+            hideOverlay(animated: true)
+        } else {
+            showOverlay(animated: false) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    self?.hideOverlay(animated: true)
+                }
+            }
+        }
+    }
+
+    func testFullAnimationCycle() {
+        if isOverlayVisible {
+            hideOverlay(animated: true) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    self?.showOverlay(animated: true)
+                }
+            }
+        } else {
+            showOverlay(animated: true) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.40) {
+                    self?.hideOverlay(animated: true)
+                }
+            }
+        }
+    }
+
+    func toggleVisibility(animated: Bool = true, completion: (() -> Void)? = nil) {
+        if isOverlayVisible {
+            hideOverlay(animated: animated, completion: completion)
+        } else {
+            showOverlay(animated: animated, completion: completion)
+        }
+    }
+
+    func showOverlay(animated: Bool = true, completion: (() -> Void)? = nil) {
+        guard let win = window else { completion?(); return }
+
+        animationTimer?.invalidate()
+        animationTimer = nil
+
+        let d = UserDefaults.standard
+        let targetAlpha: CGFloat = d.object(forKey: Pref.opacity) != nil
+            ? CGFloat(d.float(forKey: Pref.opacity))
+            : CGFloat(_storedOpacity > 0 ? _storedOpacity : 1.0)
+
+        var targetFrame = targetRestingFrame ?? win.frame
+        let screenFrames = NSScreen.screens.map { $0.visibleFrame }
+        let isOnScreen = screenFrames.contains { $0.intersection(targetFrame).width > 60 && $0.intersection(targetFrame).height > 60 }
+        if !isOnScreen, let mainScreen = NSScreen.main ?? NSScreen.screens.first {
+            let sf = mainScreen.visibleFrame
+            targetFrame.origin.x = min(sf.maxX - targetFrame.width, max(sf.minX, targetFrame.origin.x))
+            targetFrame.origin.y = min(sf.maxY - targetFrame.height, max(sf.minY, targetFrame.origin.y))
+        }
+        targetRestingFrame = targetFrame
+        isOverlayVisible = true
+
+        let style = animated ? inAnimationStyle : .none
+        if style == .none {
+            isAnimatingVisibility = false
+            win.alphaValue = targetAlpha
+            win.setFrame(targetFrame, display: true)
+            win.makeKeyAndOrderFront(nil)
+            if isLocked && hoverOpacityEnabled { installMouseMonitor() }
+            completion?()
+            return
+        }
+
+        isAnimatingVisibility = true
+        let center = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+
+        let defaultStartScale: CGFloat
+        let defaultStartOffsetX: CGFloat
+        let defaultStartOffsetY: CGFloat
+
+        switch style {
+        case .springPop:
+            defaultStartScale = 0.75; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .overshootBounce:
+            defaultStartScale = 0.70; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .smoothEase:
+            defaultStartScale = 0.75; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .subtleZoom:
+            defaultStartScale = 0.85; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .centerZoom:
+            defaultStartScale = 0.50; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .systemAlertPop:
+            defaultStartScale = 0.80; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .systemDocumentZoom:
+            defaultStartScale = 0.85; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .systemUtilityPop:
+            defaultStartScale = 0.90; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .fadeDissolve:
+            defaultStartScale = 1.00; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .slideInTop:
+            defaultStartScale = 1.00; defaultStartOffsetX = 0; defaultStartOffsetY = 80.0
+        case .slideInBottom:
+            defaultStartScale = 1.00; defaultStartOffsetX = 0; defaultStartOffsetY = -80.0
+        case .slideInLeft:
+            defaultStartScale = 1.00; defaultStartOffsetX = -80.0; defaultStartOffsetY = 0
+        case .slideInRight:
+            defaultStartScale = 1.00; defaultStartOffsetX = 80.0; defaultStartOffsetY = 0
+        case .systemShake:
+            defaultStartScale = 1.00; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .pulseAttention:
+            defaultStartScale = 1.00; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        case .none:
+            defaultStartScale = 1.00; defaultStartOffsetX = 0; defaultStartOffsetY = 0
+        }
+
+        let startAlpha: CGFloat
+        let fromScale: CGFloat
+        let fromOffsetX: CGFloat
+        let fromOffsetY: CGFloat
+
+        if win.isVisible && win.frame.width > 0 {
+            startAlpha = win.alphaValue
+            fromScale = win.frame.width / max(1, targetFrame.width)
+            fromOffsetX = win.frame.origin.x - (center.x - win.frame.width / 2)
+            fromOffsetY = win.frame.origin.y - (center.y - win.frame.height / 2)
+        } else {
+            startAlpha = 0
+            fromScale = defaultStartScale
+            fromOffsetX = defaultStartOffsetX
+            fromOffsetY = defaultStartOffsetY
+            let w = 2.0 * (targetFrame.width * defaultStartScale / 2.0).rounded()
+            let h = 2.0 * (targetFrame.height * defaultStartScale / 2.0).rounded()
+            win.alphaValue = 0
+            win.setFrame(NSRect(x: center.x - w / 2 + defaultStartOffsetX,
+                                y: center.y - h / 2 + defaultStartOffsetY,
+                                width: w, height: h), display: false)
+            win.orderFront(nil)
+        }
+
+        let duration = max(0.15, min(1.00, inAnimationDuration))
+        let bounciness = inAnimationBounciness
+        let startTime = CACurrentMediaTime()
+
+        // Standard CASpringAnimation physics formulation
+        let springDamping = 26.0 - bounciness * 18.0
+        let springStiffness = 180.0
+        let springMass = 1.0
+        let omega0 = sqrt(springStiffness / springMass)
+        let zeta = springDamping / (2.0 * sqrt(springStiffness * springMass))
+        let omegaD = omega0 * sqrt(max(0.0001, 1.0 - zeta * zeta))
+
+        func springProg(t: Double) -> Double {
+            if zeta < 1.0 {
+                let decay = exp(-zeta * omega0 * t)
+                return 1.0 - decay * (cos(omegaD * t) + (zeta * omega0 / omegaD) * sin(omegaD * t))
+            } else {
+                return 1.0 - exp(-omega0 * t) * (1.0 + omega0 * t)
+            }
+        }
+
+        let savedMinSize = win.minSize
+        win.minSize = .zero
+        win.contentAspectRatio = .zero
+
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self, weak win] t in
+            guard let self, let win else { t.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - startTime
+            let normT = min(1.0, elapsed / duration)
+
+            let scale: CGFloat
+            let curAlpha: CGFloat
+            let curOffsetX: CGFloat
+            let curOffsetY: CGFloat
+
+            switch style {
+            case .springPop:
+                let sp = CGFloat(springProg(t: elapsed))
+                scale = fromScale + (1.0 - fromScale) * sp
+                curOffsetX = fromOffsetX * (1.0 - CGFloat(normT))
+                curOffsetY = fromOffsetY * (1.0 - CGFloat(normT))
+                let fadeP = min(1.0, CGFloat(elapsed / (duration * 0.75)))
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * fadeP
+
+            case .overshootBounce:
+                let raw = 1.0 - exp(-6.0 * normT) * cos(3.0 * .pi * normT)
+                let raw0 = 0.0
+                let raw1 = 1.0 - exp(-6.0) * cos(3.0 * .pi)
+                let prog = (raw - raw0) / (raw1 - raw0)
+                let boost = CGFloat(0.85 + 0.35 * bounciness)
+                scale = fromScale + (1.0 - fromScale) * (1.0 + (CGFloat(prog) - 1.0) * boost)
+                curOffsetX = fromOffsetX * (1.0 - CGFloat(normT))
+                curOffsetY = fromOffsetY * (1.0 - CGFloat(normT))
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * min(1.0, CGFloat(normT / 0.70))
+
+            case .smoothEase:
+                let ease = 1.0 - pow(1.0 - CGFloat(normT), 3.0)
+                scale = fromScale + (1.0 - fromScale) * ease
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .subtleZoom:
+                let ease = 1.0 - pow(1.0 - CGFloat(normT), 2.5)
+                scale = fromScale + (1.0 - fromScale) * ease
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .centerZoom:
+                let ease = 1.0 - pow(1.0 - CGFloat(normT), 3.0)
+                scale = fromScale + (1.0 - fromScale) * ease
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .systemAlertPop:
+                let pScale: CGFloat
+                if normT < 0.65 {
+                    let p = CGFloat(normT / 0.65)
+                    let ease = 1.0 - pow(1.0 - p, 2.0)
+                    pScale = 0.80 + 0.25 * ease
+                } else {
+                    let p = CGFloat((normT - 0.65) / 0.35)
+                    let ease = 1.0 - pow(1.0 - p, 2.0)
+                    pScale = 1.05 - 0.05 * ease
+                }
+                scale = fromScale + (pScale - fromScale) * min(1.0, CGFloat(normT / 0.85))
+                curOffsetX = fromOffsetX * (1.0 - CGFloat(normT))
+                curOffsetY = fromOffsetY * (1.0 - CGFloat(normT))
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * min(1.0, CGFloat(normT / 0.60))
+
+            case .systemDocumentZoom:
+                let ease = CGFloat(normT < 0.5 ? 2.0 * normT * normT : 1.0 - pow(-2.0 * normT + 2.0, 2.0) / 2.0)
+                scale = fromScale + (1.0 - fromScale) * ease
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .systemUtilityPop:
+                let ease = 1.0 - pow(1.0 - CGFloat(normT), 4.0)
+                scale = fromScale + (1.0 - fromScale) * ease
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .fadeDissolve:
+                let ease = 1.0 - pow(1.0 - CGFloat(normT), 2.0)
+                scale = 1.0
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .slideInTop, .slideInBottom, .slideInLeft, .slideInRight:
+                let ease = 1.0 - pow(1.0 - CGFloat(normT), 3.0)
+                scale = fromScale + (1.0 - fromScale) * ease
+                curOffsetX = fromOffsetX * (1.0 - ease)
+                curOffsetY = fromOffsetY * (1.0 - ease)
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * ease
+
+            case .systemShake:
+                let amp = 20.0 * exp(-3.5 * normT) * sin(6.0 * .pi * normT)
+                scale = 1.0
+                curOffsetX = fromOffsetX * (1.0 - CGFloat(normT)) + CGFloat(amp)
+                curOffsetY = fromOffsetY * (1.0 - CGFloat(normT))
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * min(1.0, CGFloat(normT / 0.35))
+
+            case .pulseAttention:
+                let boost = 0.20 * (0.6 + 0.8 * bounciness)
+                let pulse = boost * sin(normT * .pi * 2.0) * exp(-2.5 * normT)
+                scale = 1.0 + CGFloat(pulse)
+                curOffsetX = fromOffsetX * (1.0 - CGFloat(normT))
+                curOffsetY = fromOffsetY * (1.0 - CGFloat(normT))
+                curAlpha = startAlpha + (targetAlpha - startAlpha) * min(1.0, CGFloat(normT / 0.35))
+
+            case .none:
+                scale = 1.0
+                curOffsetX = 0
+                curOffsetY = 0
+                curAlpha = targetAlpha
+            }
+
+            let curW = 2.0 * (targetFrame.width * scale / 2.0).rounded()
+            let curH = 2.0 * (targetFrame.height * scale / 2.0).rounded()
+            let curX = center.x - curW / 2.0 + curOffsetX
+            let curY = center.y - curH / 2.0 + curOffsetY
+            let curRad = min(self.cornerRadiusValue, curW / 2.0, curH / 2.0)
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            win.setFrame(NSRect(x: curX, y: curY, width: curW, height: curH), display: true)
+            self.contentView.syncGeometry(size: CGSize(width: curW, height: curH), cornerRadius: curRad)
+            win.alphaValue = curAlpha
+            CATransaction.commit()
+
+            if elapsed >= duration {
+                t.invalidate()
+                self.animationTimer = nil
+                self.isAnimatingVisibility = false
+                win.minSize = savedMinSize
+                win.setFrame(targetFrame, display: true)
+                let finalRad = min(self.cornerRadiusValue, targetFrame.width / 2.0, targetFrame.height / 2.0)
+                self.contentView.syncGeometry(size: targetFrame.size, cornerRadius: finalRad)
+                self.applyAspectConstraint()
+                win.alphaValue = targetAlpha
+                if self.isLocked && self.hoverOpacityEnabled { self.installMouseMonitor() }
+                completion?()
+            }
+        }
+        animationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func hideOverlay(animated: Bool = true, completion: (() -> Void)? = nil) {
+        guard let win = window, win.isVisible else {
+            isOverlayVisible = false
+            completion?()
+            return
+        }
+
+        animationTimer?.invalidate()
+        animationTimer = nil
+
+        contentView.updateHoverState(cameraName: cameraName, isLocked: true, isMirrored: isMirrored,
+                                     windowFrame: win.frame, screenFrame: win.screen?.visibleFrame ?? .zero)
+
+        if isLocked && hoverOpacityEnabled { removeMouseMonitor() }
+
+        if !isAnimatingVisibility {
+            targetRestingFrame = win.frame
+        }
+        let targetFrame = targetRestingFrame ?? win.frame
+        let center = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
+
+        let d = UserDefaults.standard
+        let targetAlpha: CGFloat = d.object(forKey: Pref.opacity) != nil
+            ? CGFloat(d.float(forKey: Pref.opacity))
+            : CGFloat(_storedOpacity > 0 ? _storedOpacity : 1.0)
+
+        isOverlayVisible = false
+
+        let style = animated ? outAnimationStyle : .none
+        if style == .none {
+            isAnimatingVisibility = false
+            win.orderOut(nil)
+            win.setFrame(targetFrame, display: false)
+            win.alphaValue = targetAlpha
+            completion?()
+            return
+        }
+
+        isAnimatingVisibility = true
+        let startAlpha = win.alphaValue
+        let startScale = win.frame.width / max(1, targetFrame.width)
+        let startOffsetX = win.frame.origin.x - (center.x - win.frame.width / 2)
+        let startOffsetY = win.frame.origin.y - (center.y - win.frame.height / 2)
+
+        let targetEndScale: CGFloat
+        let targetEndOffsetX: CGFloat
+        let targetEndOffsetY: CGFloat
+
+        switch style {
+        case .springPop:
+            targetEndScale = 0.75; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .overshootBounce:
+            targetEndScale = 0.68; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .smoothEase:
+            targetEndScale = 0.75; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .subtleZoom:
+            targetEndScale = 0.80; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .centerZoom:
+            targetEndScale = 0.40; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .systemAlertPop:
+            targetEndScale = 0.80; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .systemDocumentZoom:
+            targetEndScale = 0.85; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .systemUtilityPop:
+            targetEndScale = 0.90; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .fadeDissolve:
+            targetEndScale = 1.00; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .slideInTop:
+            targetEndScale = 1.00; targetEndOffsetX = 0; targetEndOffsetY = 80.0
+        case .slideInBottom:
+            targetEndScale = 1.00; targetEndOffsetX = 0; targetEndOffsetY = -80.0
+        case .slideInLeft:
+            targetEndScale = 1.00; targetEndOffsetX = -80.0; targetEndOffsetY = 0
+        case .slideInRight:
+            targetEndScale = 1.00; targetEndOffsetX = 80.0; targetEndOffsetY = 0
+        case .systemShake:
+            targetEndScale = 1.00; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .pulseAttention:
+            targetEndScale = 1.00; targetEndOffsetX = 0; targetEndOffsetY = 0
+        case .none:
+            targetEndScale = 1.00; targetEndOffsetX = 0; targetEndOffsetY = 0
+        }
+
+        let duration = max(0.15, min(1.00, outAnimationDuration))
+        let startTime = CACurrentMediaTime()
+
+        let savedMinSize = win.minSize
+        win.minSize = .zero
+        win.contentAspectRatio = .zero
+
+        let timer = Timer(timeInterval: 1.0 / 120.0, repeats: true) { [weak self, weak win] t in
+            guard let self, let win else { t.invalidate(); return }
+            let elapsed = CACurrentMediaTime() - startTime
+            let normT = min(1.0, elapsed / duration)
+
+            let scale: CGFloat
+            let curAlpha: CGFloat
+            let curOffsetX: CGFloat
+            let curOffsetY: CGFloat
+
+            switch style {
+            case .springPop:
+                let ease = CGFloat(normT * normT)
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .overshootBounce:
+                if normT < 0.25 {
+                    let p = CGFloat(normT / 0.25)
+                    scale = startScale + 0.05 * sin(p * .pi * 0.5)
+                    curOffsetX = startOffsetX
+                    curOffsetY = startOffsetY
+                    curAlpha = startAlpha
+                } else {
+                    let p = CGFloat((normT - 0.25) / 0.75)
+                    let ease = p * p * p
+                    scale = (startScale + 0.05) - (startScale + 0.05 - targetEndScale) * ease
+                    curOffsetX = startOffsetX
+                    curOffsetY = startOffsetY
+                    curAlpha = startAlpha * (1.0 - p)
+                }
+
+            case .smoothEase:
+                let ease = CGFloat(normT * normT * normT)
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .subtleZoom:
+                let ease = CGFloat(normT * normT)
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .centerZoom:
+                let ease = CGFloat(normT * normT)
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .systemAlertPop:
+                let ease = CGFloat(normT * normT)
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .systemDocumentZoom:
+                let ease = CGFloat(normT < 0.5 ? 2.0 * normT * normT : 1.0 - pow(-2.0 * normT + 2.0, 2.0) / 2.0)
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .systemUtilityPop:
+                let ease = CGFloat(pow(normT, 3.0))
+                scale = startScale - (startScale - targetEndScale) * ease
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .fadeDissolve:
+                scale = 1.0
+                curOffsetX = startOffsetX
+                curOffsetY = startOffsetY
+                curAlpha = startAlpha * (1.0 - CGFloat(normT))
+
+            case .slideInTop, .slideInBottom, .slideInLeft, .slideInRight:
+                let ease = CGFloat(normT * normT)
+                scale = startScale
+                curOffsetX = startOffsetX + (targetEndOffsetX - startOffsetX) * ease
+                curOffsetY = startOffsetY + (targetEndOffsetY - startOffsetY) * ease
+                curAlpha = startAlpha * (1.0 - ease)
+
+            case .systemShake:
+                let amp = 16.0 * (1.0 - normT) * sin(6.0 * .pi * normT)
+                scale = startScale
+                curOffsetX = startOffsetX + CGFloat(amp)
+                curOffsetY = startOffsetY
+                curAlpha = startAlpha * (1.0 - CGFloat(normT))
+
+            case .pulseAttention:
+                let pulse = 0.08 * sin(normT * .pi)
+                scale = startScale + CGFloat(pulse)
+                curOffsetX = startOffsetX
+                curOffsetY = startOffsetY
+                curAlpha = startAlpha * (1.0 - CGFloat(pow(normT, 1.5)))
+
+            case .none:
+                scale = 1.0
+                curOffsetX = 0
+                curOffsetY = 0
+                curAlpha = 0
+            }
+
+            let curW = 2.0 * (targetFrame.width * scale / 2.0).rounded()
+            let curH = 2.0 * (targetFrame.height * scale / 2.0).rounded()
+            let curX = center.x - curW / 2.0 + curOffsetX
+            let curY = center.y - curH / 2.0 + curOffsetY
+            let curRad = min(self.cornerRadiusValue, curW / 2.0, curH / 2.0)
+
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            win.setFrame(NSRect(x: curX, y: curY, width: curW, height: curH), display: true)
+            self.contentView.syncGeometry(size: CGSize(width: curW, height: curH), cornerRadius: curRad)
+            win.alphaValue = curAlpha
+            CATransaction.commit()
+
+            if elapsed >= duration {
+                t.invalidate()
+                self.animationTimer = nil
+                self.isAnimatingVisibility = false
+                win.orderOut(nil)
+                win.minSize = savedMinSize
+                win.setFrame(targetFrame, display: false)
+                let finalRad = min(self.cornerRadiusValue, targetFrame.width / 2.0, targetFrame.height / 2.0)
+                self.contentView.syncGeometry(size: targetFrame.size, cornerRadius: finalRad)
+                self.applyAspectConstraint()
+                win.alphaValue = targetAlpha
+                completion?()
+            }
+        }
+        animationTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    func centerOverlay() {
+        window?.center()
+        targetRestingFrame = window?.frame
+        persistFrame(); onStateChanged?()
+    }
 
     func toggleMirror() {
         isMirrored.toggle(); applyMirrorTransform()
@@ -1019,6 +1836,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         let f = win.frame
         setFrameRelockingAspect(NSRect(x: f.minX, y: f.minY, width: w, height: h),
                                 lockTo: lockRatio.width > 0 && lockRatio.height > 0 ? lockRatio : nil)
+        targetRestingFrame = win.frame
         persistFrame(); onStateChanged?()
     }
 
@@ -1026,6 +1844,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         guard let win = window else { return }
         let f = win.frame
         win.setFrame(NSRect(x: x, y: y, width: f.width, height: f.height), display: true)
+        targetRestingFrame = win.frame
         persistFrame(); onStateChanged?()
     }
 
@@ -1051,6 +1870,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         default:   newX = f.minX; newY = f.minY
         }
         win.setFrame(NSRect(x: newX, y: newY, width: f.width, height: f.height), display: true)
+        targetRestingFrame = win.frame
         persistFrame(); onStateChanged?()
     }
 
@@ -1081,6 +1901,7 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         default: break
         }
         win.setFrame(f, display: true)
+        targetRestingFrame = win.frame
         persistFrame(); onStateChanged?()
     }
 
@@ -1246,8 +2067,11 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func applyMirrorTransform() {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
         previewLayer.transform = isMirrored
             ? CATransform3DMakeScale(-1, 1, 1) : CATransform3DIdentity
+        CATransaction.commit()
     }
 
     private func fitHeightToAspect() {
@@ -1280,6 +2104,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         syncHoverOverlay()
     }
     func windowDidMove(_ n: Notification) {
+        if isAnimatingVisibility { return }
+        targetRestingFrame = window?.frame
         persistFrame()
         syncHoverOverlay()
         onStateChanged?()
@@ -1294,9 +2120,11 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
         // Restore only once the drag is over — windowDidResize fires continuously
         // throughout it, so restoring there would undo the elevation immediately.
         window?.level = .floating
+        targetRestingFrame = window?.frame
         persistFrame(); syncHoverOverlay(); onStateChanged?()
     }
     func windowWillResize(_ sender: NSWindow, to newSize: NSSize) -> NSSize {
+        if isAnimatingVisibility { return newSize }
         // Elevate level above .floating so the camera controls panel can't
         // intercept mouse events during live resize.
         sender.level = .statusBar
@@ -1307,6 +2135,8 @@ final class PreviewWindowController: NSWindowController, NSWindowDelegate {
     func windowDidResize(_ n: Notification) {
         // Re-clamp the corner radius: "Full" tracks the new size.
         applyCornerRadius()
+        if isAnimatingVisibility { return }
+        targetRestingFrame = window?.frame
         // Programmatic setFrame also routes through windowWillResize with no
         // end-live-resize to follow, so restore the level for that case here.
         if !(window?.inLiveResize ?? false) { window?.level = .floating }
@@ -1361,11 +2191,28 @@ final class PreviewContentView: NSView {
         return l
     }
 
+    func syncGeometry(size: CGSize, cornerRadius: CGFloat) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        self.cornerRadius = cornerRadius
+        layer?.cornerRadius = cornerRadius
+        if let pl = previewLayer {
+            pl.anchorPoint  = CGPoint(x: 0.5, y: 0.5)
+            pl.bounds       = CGRect(origin: .zero, size: size)
+            pl.position     = CGPoint(x: size.width / 2.0, y: size.height / 2.0)
+            pl.cornerRadius = cornerRadius
+        }
+        hoverControls.frame = CGRect(origin: .zero, size: size)
+        CATransaction.commit()
+    }
+
     func attachPreviewLayer(_ avLayer: AVCaptureVideoPreviewLayer) {
         previewLayer?.removeFromSuperlayer()
         previewLayer = avLayer
         avLayer.videoGravity  = .resizeAspectFill
-        avLayer.frame         = bounds
+        avLayer.anchorPoint   = CGPoint(x: 0.5, y: 0.5)
+        avLayer.bounds        = bounds
+        avLayer.position      = CGPoint(x: bounds.midX, y: bounds.midY)
         avLayer.cornerRadius  = cornerRadius
         avLayer.masksToBounds = true
         self.layer!.insertSublayer(avLayer, at: 0)
@@ -1388,9 +2235,16 @@ final class PreviewContentView: NSView {
 
     override func layout() {
         super.layout()
-        previewLayer?.frame        = bounds
-        previewLayer?.cornerRadius = cornerRadius
-        hoverControls.frame        = bounds
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let pl = previewLayer {
+            pl.anchorPoint   = CGPoint(x: 0.5, y: 0.5)
+            pl.bounds        = bounds
+            pl.position      = CGPoint(x: bounds.midX, y: bounds.midY)
+            pl.cornerRadius  = cornerRadius
+        }
+        hoverControls.frame  = bounds
+        CATransaction.commit()
     }
 
     // MARK: Tracking Area
@@ -1779,6 +2633,34 @@ final class ControlPanelWindowController: NSWindowController, NSWindowDelegate {
     var onApplyMargin:         ((String, CGFloat) -> Void)?  // edge "top"|"bottom"|"left"|"right", pts
     var onToggleHoverOpacity:  (() -> Void)?
     var onSetHoverOpacity:     ((Float) -> Void)?
+    var onSetAnimationMode:          ((AnimationMode) -> Void)?
+    var onSetInAnimationStyle:      ((WindowAnimationStyle) -> Void)?
+    var onSetInAnimationDuration:   ((Double) -> Void)?
+    var onSetInAnimationBounciness: ((Double) -> Void)?
+    var onSetOutAnimationStyle:     ((WindowAnimationStyle) -> Void)?
+    var onSetOutAnimationDuration:  ((Double) -> Void)?
+    var onSetOutAnimationBounciness: ((Double) -> Void)?
+    var onTestInAnimation:          (() -> Void)?
+    var onTestOutAnimation:         (() -> Void)?
+    var onTestCycleAnimation:       (() -> Void)?
+
+    // Backward-compatibility aliases
+    var onSetAnimationStyle:      ((WindowAnimationStyle) -> Void)? {
+        get { onSetInAnimationStyle }
+        set { onSetInAnimationStyle = newValue }
+    }
+    var onSetAnimationDuration:   ((Double) -> Void)? {
+        get { onSetInAnimationDuration }
+        set { onSetInAnimationDuration = newValue }
+    }
+    var onSetAnimationBounciness: ((Double) -> Void)? {
+        get { onSetInAnimationBounciness }
+        set { onSetInAnimationBounciness = newValue }
+    }
+    var onTestAnimation:          (() -> Void)? {
+        get { onTestCycleAnimation }
+        set { onTestCycleAnimation = newValue }
+    }
     var onOpenShortcuts:       (() -> Void)?
     var onSnapCorner:          ((String) -> Void)?  // "TL"|"TR"|"BL"|"BR"
 
@@ -1787,7 +2669,7 @@ final class ControlPanelWindowController: NSWindowController, NSWindowDelegate {
 
     init() {
         let panel = ControlPanelWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 365),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 680),
             styleMask:   [.titled, .closable],
             backing:     .buffered, defer: false)
         super.init(window: panel)
@@ -1842,6 +2724,30 @@ final class ControlPanelWindowController: NSWindowController, NSWindowDelegate {
         content.hoverOpacityToggle.target       = self; content.hoverOpacityToggle.action       = #selector(tapHoverOpacityToggle)
         content.hoverOpacitySlider.target       = self; content.hoverOpacitySlider.action       = #selector(sliderHoverOpacity(_:))
         content.hoverOpacityField.target        = self; content.hoverOpacityField.action        = #selector(fieldHoverOpacity(_:))
+
+        // Overall animation controls
+        content.modePopup.target            = self; content.modePopup.action            = #selector(popupMode(_:))
+        content.testCycleButton.target      = self; content.testCycleButton.action      = #selector(tapTestCycle)
+
+        // In animation controls
+        content.inStylePopup.target         = self; content.inStylePopup.action         = #selector(popupInStyle(_:))
+        content.testInButton.target         = self; content.testInButton.action         = #selector(tapTestIn)
+        content.inDurationSlider.target     = self; content.inDurationSlider.action     = #selector(sliderInDuration(_:))
+        content.inDurationField.target      = self; content.inDurationField.action      = #selector(fieldInDuration(_:))
+        content.inDurationStepper.target    = self; content.inDurationStepper.action    = #selector(stepInDuration(_:))
+        content.inBounceSlider.target       = self; content.inBounceSlider.action       = #selector(sliderInBounce(_:))
+        content.inBounceField.target        = self; content.inBounceField.action        = #selector(fieldInBounce(_:))
+        content.inBounceStepper.target      = self; content.inBounceStepper.action      = #selector(stepInBounce(_:))
+
+        // Out animation controls
+        content.outStylePopup.target        = self; content.outStylePopup.action        = #selector(popupOutStyle(_:))
+        content.testOutButton.target        = self; content.testOutButton.action        = #selector(tapTestOut)
+        content.outDurationSlider.target    = self; content.outDurationSlider.action    = #selector(sliderOutDuration(_:))
+        content.outDurationField.target     = self; content.outDurationField.action     = #selector(fieldOutDuration(_:))
+        content.outDurationStepper.target   = self; content.outDurationStepper.action   = #selector(stepOutDuration(_:))
+        content.outBounceSlider.target      = self; content.outBounceSlider.action      = #selector(sliderOutBounce(_:))
+        content.outBounceField.target       = self; content.outBounceField.action       = #selector(fieldOutBounce(_:))
+        content.outBounceStepper.target     = self; content.outBounceStepper.action     = #selector(stepOutBounce(_:))
         // Steppers — each wired to its own @objc action
         content.radiusStepper.target  = self; content.radiusStepper.action  = #selector(stepRadius(_:))
         content.opacityStepper.target = self; content.opacityStepper.action = #selector(stepOpacity(_:))
@@ -1945,6 +2851,51 @@ final class ControlPanelWindowController: NSWindowController, NSWindowDelegate {
         content.hoverOpacitySlider.floatValue = state.hoverOpacity
         content.hoverOpacityField.stringValue = "\(Int(state.hoverOpacity * 100))%"
         content.hoverOpacityStepper.doubleValue = Double(Int(state.hoverOpacity * 100))
+
+        // ── Overall Animation ─────────────────────────────────────────────────
+        content.modePopup.selectItem(at: state.animationMode == .independent ? 1 : 0)
+
+        // ── In Animation (Show) ───────────────────────────────────────────────
+        if let idx = WindowAnimationStyle.allCases.firstIndex(of: state.inAnimationStyle) {
+            content.inStylePopup.selectItem(at: idx)
+        }
+        let inAnimated = state.inAnimationStyle != .none
+        let inUsesBounce = state.inAnimationStyle.usesBounciness
+
+        content.inDurationSlider.isEnabled  = inAnimated
+        content.inDurationField.isEnabled   = inAnimated
+        content.inDurationStepper.isEnabled = inAnimated
+        content.inDurationSlider.doubleValue  = state.inAnimationDuration
+        content.inDurationStepper.doubleValue = state.inAnimationDuration
+        content.inDurationField.stringValue   = String(format: "%.2fs", state.inAnimationDuration)
+
+        content.inBounceSlider.isEnabled  = inUsesBounce
+        content.inBounceField.isEnabled   = inUsesBounce
+        content.inBounceStepper.isEnabled = inUsesBounce
+        content.inBounceSlider.doubleValue  = state.inAnimationBounciness * 100.0
+        content.inBounceStepper.doubleValue = state.inAnimationBounciness * 100.0
+        content.inBounceField.stringValue   = "\(Int(round(state.inAnimationBounciness * 100.0)))%"
+
+        // ── Out Animation (Hide) ──────────────────────────────────────────────
+        if let idx = WindowAnimationStyle.allCases.firstIndex(of: state.outAnimationStyle) {
+            content.outStylePopup.selectItem(at: idx)
+        }
+        let outAnimated = state.outAnimationStyle != .none
+        let outUsesBounce = state.outAnimationStyle.usesBounciness
+
+        content.outDurationSlider.isEnabled  = outAnimated
+        content.outDurationField.isEnabled   = outAnimated
+        content.outDurationStepper.isEnabled = outAnimated
+        content.outDurationSlider.doubleValue  = state.outAnimationDuration
+        content.outDurationStepper.doubleValue = state.outAnimationDuration
+        content.outDurationField.stringValue   = String(format: "%.2fs", state.outAnimationDuration)
+
+        content.outBounceSlider.isEnabled  = outUsesBounce
+        content.outBounceField.isEnabled   = outUsesBounce
+        content.outBounceStepper.isEnabled = outUsesBounce
+        content.outBounceSlider.doubleValue  = state.outAnimationBounciness * 100.0
+        content.outBounceStepper.doubleValue = state.outAnimationBounciness * 100.0
+        content.outBounceField.stringValue   = "\(Int(round(state.outAnimationBounciness * 100.0)))%"
     }
 
     // MARK: Actions
@@ -2102,6 +3053,144 @@ final class ControlPanelWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func tapShortcuts() { onOpenShortcuts?() }
+
+    // MARK: - Overall Animation Actions
+
+    @objc private func popupMode(_ p: NSPopUpButton) {
+        let mode: AnimationMode = (p.indexOfSelectedItem == 1) ? .independent : .unified
+        onSetAnimationMode?(mode)
+    }
+
+    @objc private func tapTestCycle() { onTestCycleAnimation?() }
+
+    // MARK: - In Animation Actions
+
+    @objc private func popupInStyle(_ p: NSPopUpButton) {
+        let idx = p.indexOfSelectedItem
+        if idx >= 0 && idx < WindowAnimationStyle.allCases.count {
+            onSetInAnimationStyle?(WindowAnimationStyle.allCases[idx])
+        }
+    }
+
+    @objc private func tapTestIn() { onTestInAnimation?() }
+
+    @objc private func sliderInDuration(_ s: NSSlider) {
+        let clamped = max(0.15, min(1.00, s.doubleValue))
+        content.inDurationField.stringValue = String(format: "%.2fs", clamped)
+        content.inDurationStepper.doubleValue = clamped
+        onSetInAnimationDuration?(clamped)
+    }
+
+    @objc private func fieldInDuration(_ f: NSTextField) {
+        let raw = f.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "s", with: "")
+        guard let v = Double(raw), v.isFinite else { shakeView(f); return }
+        let clamped = max(0.15, min(1.00, v))
+        content.inDurationSlider.doubleValue = clamped
+        content.inDurationStepper.doubleValue = clamped
+        f.stringValue = String(format: "%.2fs", clamped)
+        onSetInAnimationDuration?(clamped)
+    }
+
+    @objc private func stepInDuration(_ s: NSStepper) {
+        let clamped = max(0.15, min(1.00, s.doubleValue))
+        content.inDurationField.stringValue = String(format: "%.2fs", clamped)
+        content.inDurationSlider.doubleValue = clamped
+        onSetInAnimationDuration?(clamped)
+    }
+
+    @objc private func sliderInBounce(_ s: NSSlider) {
+        let v = s.doubleValue
+        content.inBounceField.stringValue = "\(Int(round(v)))%"
+        content.inBounceStepper.doubleValue = v
+        onSetInAnimationBounciness?(v / 100.0)
+    }
+
+    @objc private func fieldInBounce(_ f: NSTextField) {
+        let raw = f.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "%", with: "")
+        guard let v = Double(raw), v.isFinite else { shakeView(f); return }
+        let clamped = max(0.0, min(100.0, v))
+        content.inBounceSlider.doubleValue = clamped
+        content.inBounceStepper.doubleValue = clamped
+        f.stringValue = "\(Int(round(clamped)))%"
+        onSetInAnimationBounciness?(clamped / 100.0)
+    }
+
+    @objc private func stepInBounce(_ s: NSStepper) {
+        let v = s.doubleValue
+        content.inBounceField.stringValue = "\(Int(round(v)))%"
+        content.inBounceSlider.doubleValue = v
+        onSetInAnimationBounciness?(v / 100.0)
+    }
+
+    // MARK: - Out Animation Actions
+
+    @objc private func popupOutStyle(_ p: NSPopUpButton) {
+        let idx = p.indexOfSelectedItem
+        if idx >= 0 && idx < WindowAnimationStyle.allCases.count {
+            onSetOutAnimationStyle?(WindowAnimationStyle.allCases[idx])
+        }
+    }
+
+    @objc private func tapTestOut() { onTestOutAnimation?() }
+
+    @objc private func sliderOutDuration(_ s: NSSlider) {
+        let clamped = max(0.15, min(1.00, s.doubleValue))
+        content.outDurationField.stringValue = String(format: "%.2fs", clamped)
+        content.outDurationStepper.doubleValue = clamped
+        onSetOutAnimationDuration?(clamped)
+    }
+
+    @objc private func fieldOutDuration(_ f: NSTextField) {
+        let raw = f.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "s", with: "")
+        guard let v = Double(raw), v.isFinite else { shakeView(f); return }
+        let clamped = max(0.15, min(1.00, v))
+        content.outDurationSlider.doubleValue = clamped
+        content.outDurationStepper.doubleValue = clamped
+        f.stringValue = String(format: "%.2fs", clamped)
+        onSetOutAnimationDuration?(clamped)
+    }
+
+    @objc private func stepOutDuration(_ s: NSStepper) {
+        let clamped = max(0.15, min(1.00, s.doubleValue))
+        content.outDurationField.stringValue = String(format: "%.2fs", clamped)
+        content.outDurationSlider.doubleValue = clamped
+        onSetOutAnimationDuration?(clamped)
+    }
+
+    @objc private func sliderOutBounce(_ s: NSSlider) {
+        let v = s.doubleValue
+        content.outBounceField.stringValue = "\(Int(round(v)))%"
+        content.outBounceStepper.doubleValue = v
+        onSetOutAnimationBounciness?(v / 100.0)
+    }
+
+    @objc private func fieldOutBounce(_ f: NSTextField) {
+        let raw = f.stringValue.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: "%", with: "")
+        guard let v = Double(raw), v.isFinite else { shakeView(f); return }
+        let clamped = max(0.0, min(100.0, v))
+        content.outBounceSlider.doubleValue = clamped
+        content.outBounceStepper.doubleValue = clamped
+        f.stringValue = "\(Int(round(clamped)))%"
+        onSetOutAnimationBounciness?(clamped / 100.0)
+    }
+
+    @objc private func stepOutBounce(_ s: NSStepper) {
+        let v = s.doubleValue
+        content.outBounceField.stringValue = "\(Int(round(v)))%"
+        content.outBounceSlider.doubleValue = v
+        onSetOutAnimationBounciness?(v / 100.0)
+    }
+
+    // Legacy action aliases
+    @objc private func popupAnimation(_ p: NSPopUpButton) { popupInStyle(p) }
+    @objc private func tapTestAnimation() { tapTestCycle() }
+    @objc private func sliderDuration(_ s: NSSlider) { sliderInDuration(s) }
+    @objc private func fieldDuration(_ f: NSTextField) { fieldInDuration(f) }
+    @objc private func stepDuration(_ s: NSStepper) { stepInDuration(s) }
+    @objc private func sliderBounce(_ s: NSSlider) { sliderInBounce(s) }
+    @objc private func fieldBounce(_ f: NSTextField) { fieldInBounce(f) }
+    @objc private func stepBounce(_ s: NSStepper) { stepInBounce(s) }
+
     @objc private func tapMoveToMenu(_ sender: NSButton) {
         let menu = NSMenu()
         let corners: [(String, String)] = [("↖  Top Left","TL"),("↗  Top Right","TR"),
@@ -2281,6 +3370,53 @@ final class ControlPanelContentView: NSView {
     let edgeLeftStepper    = ControlPanelContentView.makeStepper(min: -9999, max: 9999, inc: 1)
     let applyMarginsButton = ControlPanelContentView.applyBtn()
 
+    // ── Overall Animation ─────────────────────────────────────────────────────
+    let overallHeader       = makeSectionHeader("Overall Animation")
+    let modeLabel           = ControlPanelContentView.rowLabel("Mode")
+    let modePopup           = NSPopUpButton()
+    let testCycleButton     = ControlPanelContentView.applyBtn()
+
+    // ── In Animation (Show) ───────────────────────────────────────────────────
+    let inHeader            = makeSectionHeader("In Animation (Show)")
+    let inStyleLabel        = ControlPanelContentView.rowLabel("Style")
+    let inStylePopup        = NSPopUpButton()
+    let testInButton        = ControlPanelContentView.applyBtn()
+    let inDurationLabel     = ControlPanelContentView.rowLabel("Duration")
+    let inDurationSlider    = NSSlider(value: 0.25, minValue: 0.15, maxValue: 1.00, target: nil, action: nil)
+    let inDurationField     = ControlPanelContentView.editField("0.25s")
+    let inDurationStepper   = ControlPanelContentView.makeStepper(min: 0.15, max: 1.00, inc: 0.05)
+    let inBounceLabel       = ControlPanelContentView.rowLabel("Bounce")
+    let inBounceSlider      = NSSlider(value: 50, minValue: 0, maxValue: 100, target: nil, action: nil)
+    let inBounceField       = ControlPanelContentView.editField("50%")
+    let inBounceStepper     = ControlPanelContentView.makeStepper(min: 0, max: 100, inc: 5)
+
+    // ── Out Animation (Hide) ──────────────────────────────────────────────────
+    let outHeader           = makeSectionHeader("Out Animation (Hide)")
+    let outStyleLabel       = ControlPanelContentView.rowLabel("Style")
+    let outStylePopup       = NSPopUpButton()
+    let testOutButton       = ControlPanelContentView.applyBtn()
+    let outDurationLabel    = ControlPanelContentView.rowLabel("Duration")
+    let outDurationSlider   = NSSlider(value: 0.25, minValue: 0.15, maxValue: 1.00, target: nil, action: nil)
+    let outDurationField    = ControlPanelContentView.editField("0.25s")
+    let outDurationStepper  = ControlPanelContentView.makeStepper(min: 0.15, max: 1.00, inc: 0.05)
+    let outBounceLabel      = ControlPanelContentView.rowLabel("Bounce")
+    let outBounceSlider     = NSSlider(value: 50, minValue: 0, maxValue: 100, target: nil, action: nil)
+    let outBounceField      = ControlPanelContentView.editField("50%")
+    let outBounceStepper    = ControlPanelContentView.makeStepper(min: 0, max: 100, inc: 5)
+
+    // Legacy aliases for backward compatibility
+    var animationLabel: NSTextField { inStyleLabel }
+    var animationPopup: NSPopUpButton { inStylePopup }
+    var testAnimationButton: NSButton { testInButton }
+    var durationLabel: NSTextField { inDurationLabel }
+    var durationSlider: NSSlider { inDurationSlider }
+    var durationField: NSTextField { inDurationField }
+    var durationStepper: NSStepper { inDurationStepper }
+    var bounceLabel: NSTextField { inBounceLabel }
+    var bounceSlider: NSSlider { inBounceSlider }
+    var bounceField: NSTextField { inBounceField }
+    var bounceStepper: NSStepper { inBounceStepper }
+
     // ── Footer ────────────────────────────────────────────────────────────────
     let hidePanelButton = NSButton(title: "Hide Control Panel", target: nil, action: nil)
     let statusLabel     = NSTextField(labelWithString: " ")   // retired
@@ -2337,17 +3473,45 @@ final class ControlPanelContentView: NSView {
         shortcutsButton.bezelStyle = .rounded; shortcutsButton.controlSize = .small
         shortcutsButton.font = .systemFont(ofSize: 11)
 
+        modePopup.controlSize = .small; modePopup.font = .systemFont(ofSize: 12)
+        modePopup.pullsDown = false
+        for mode in AnimationMode.allCases {
+            modePopup.addItem(withTitle: mode.title)
+            modePopup.lastItem?.representedObject = mode.rawValue
+        }
+        testCycleButton.title = "Test Cycle"
+
+        inStylePopup.controlSize = .small; inStylePopup.font = .systemFont(ofSize: 12)
+        inStylePopup.pullsDown = false
+        for style in WindowAnimationStyle.allCases {
+            inStylePopup.addItem(withTitle: style.title)
+            inStylePopup.lastItem?.representedObject = style.rawValue
+        }
+        testInButton.title = "Test In"
+
+        outStylePopup.controlSize = .small; outStylePopup.font = .systemFont(ofSize: 12)
+        outStylePopup.pullsDown = false
+        for style in WindowAnimationStyle.allCases {
+            outStylePopup.addItem(withTitle: style.title)
+            outStylePopup.lastItem?.representedObject = style.rawValue
+        }
+        testOutButton.title = "Test Out"
+
         // Use default (regular) control size for sliders — .small can glitch
         // on external screens when backing scale factor differs from main screen.
-        radiusSlider.numberOfTickMarks     = 0
-        opacitySlider.numberOfTickMarks    = 0
-        hoverOpacitySlider.numberOfTickMarks = 0
+        radiusSlider.numberOfTickMarks        = 0
+        opacitySlider.numberOfTickMarks       = 0
+        hoverOpacitySlider.numberOfTickMarks  = 0
+        inDurationSlider.numberOfTickMarks    = 0
+        inBounceSlider.numberOfTickMarks      = 0
+        outDurationSlider.numberOfTickMarks   = 0
+        outBounceSlider.numberOfTickMarks     = 0
         hoverOpacityToggle.font = .systemFont(ofSize: 11)
-
 
         for st in [radiusStepper, opacityStepper, hoverOpacityStepper,
                    widthStepper, heightStepper, xStepper, yStepper,
-                   edgeTopStepper, edgeRightStepper, edgeBottomStepper, edgeLeftStepper] {
+                   edgeTopStepper, edgeRightStepper, edgeBottomStepper, edgeLeftStepper,
+                   inDurationStepper, inBounceStepper, outDurationStepper, outBounceStepper] {
             st.controlSize = .small
         }
 
@@ -2367,6 +3531,13 @@ final class ControlPanelContentView: NSView {
             moveToButton,
             marginsLabel, edgeTopField, edgeTopStepper, edgeRightField, edgeRightStepper,
             edgeBottomField, edgeBottomStepper, edgeLeftField, edgeLeftStepper, applyMarginsButton,
+            overallHeader, modeLabel, modePopup, testCycleButton,
+            inHeader, inStyleLabel, inStylePopup, testInButton,
+            inDurationLabel, inDurationSlider, inDurationField, inDurationStepper,
+            inBounceLabel, inBounceSlider, inBounceField, inBounceStepper,
+            outHeader, outStyleLabel, outStylePopup, testOutButton,
+            outDurationLabel, outDurationSlider, outDurationField, outDurationStepper,
+            outBounceLabel, outBounceSlider, outBounceField, outBounceStepper,
             hidePanelButton, statusLabel
         ]
         all.forEach { addSubview($0) }
@@ -2511,12 +3682,84 @@ final class ControlPanelContentView: NSView {
         applyMarginsButton.frame = CGRect(x: W - R - apBW, y: y + (rH - bsH) / 2, width: apBW, height: bsH)
 
         y -= 18
-        sep(5, y: &y, l: L, w: W - L - R); y -= 8
+        y -= 2
+        sep(5, y: &y, l: L, w: W - L - R); y -= 7
+
+        let secH: CGFloat = 14
+
+        // ── Overall Animation ─────────────────────────────────────────────────
+        y -= secH
+        overallHeader.frame = CGRect(x: L, y: y, width: W - L - R, height: secH)
+        y -= 3
+        y -= rH
+        let testCycleBW: CGFloat = 80
+        modeLabel.frame = CGRect(x: L, y: y + (rH - lbH) / 2, width: lW, height: lbH)
+        modePopup.frame = CGRect(x: L + lW + sp, y: y + (rH - 20) / 2,
+                                 width: W - R - (L + lW + sp) - testCycleBW - 6, height: 20)
+        testCycleButton.frame = CGRect(x: W - R - testCycleBW, y: y + (rH - bsH) / 2,
+                                       width: testCycleBW, height: bsH)
+
+        y -= 6; sep(6, y: &y, l: L, w: W - L - R); y -= 7
+
+        // ── In Animation (Show) ───────────────────────────────────────────────
+        y -= secH
+        inHeader.frame = CGRect(x: L, y: y, width: W - L - R, height: secH)
+        y -= 3
+        y -= rH
+        let testInBW: CGFloat = 64
+        inStyleLabel.frame = CGRect(x: L, y: y + (rH - lbH) / 2, width: lW, height: lbH)
+        inStylePopup.frame = CGRect(x: L + lW + sp, y: y + (rH - 20) / 2,
+                                    width: W - R - (L + lW + sp) - testInBW - 6, height: 20)
+        testInButton.frame = CGRect(x: W - R - testInBW, y: y + (rH - bsH) / 2,
+                                    width: testInBW, height: bsH)
+
+        y -= 4
+        y -= rH
+        inDurationLabel.frame   = CGRect(x: L,              y: y + (rH - lbH) / 2, width: lW,      height: lbH)
+        inDurationSlider.frame  = CGRect(x: L + lW + sp,    y: y + (rH - slH) / 2, width: sliderW, height: slH)
+        inDurationField.frame   = CGRect(x: sliderRightX,   y: y + (rH - fH)  / 2, width: fW,      height: fH)
+        inDurationStepper.frame = CGRect(x: sliderRightX + fW + 2, y: y + (rH - stH) / 2, width: stW, height: stH)
+
+        y -= 4
+        y -= rH
+        inBounceLabel.frame   = CGRect(x: L,              y: y + (rH - lbH) / 2, width: lW,      height: lbH)
+        inBounceSlider.frame  = CGRect(x: L + lW + sp,    y: y + (rH - slH) / 2, width: sliderW, height: slH)
+        inBounceField.frame   = CGRect(x: sliderRightX,   y: y + (rH - fH)  / 2, width: fW,      height: fH)
+        inBounceStepper.frame = CGRect(x: sliderRightX + fW + 2, y: y + (rH - stH) / 2, width: stW, height: stH)
+
+        y -= 6; sep(7, y: &y, l: L, w: W - L - R); y -= 7
+
+        // ── Out Animation (Hide) ──────────────────────────────────────────────
+        y -= secH
+        outHeader.frame = CGRect(x: L, y: y, width: W - L - R, height: secH)
+        y -= 3
+        y -= rH
+        let testOutBW: CGFloat = 64
+        outStyleLabel.frame = CGRect(x: L, y: y + (rH - lbH) / 2, width: lW, height: lbH)
+        outStylePopup.frame = CGRect(x: L + lW + sp, y: y + (rH - 20) / 2,
+                                     width: W - R - (L + lW + sp) - testOutBW - 6, height: 20)
+        testOutButton.frame = CGRect(x: W - R - testOutBW, y: y + (rH - bsH) / 2,
+                                     width: testOutBW, height: bsH)
+
+        y -= 4
+        y -= rH
+        outDurationLabel.frame   = CGRect(x: L,              y: y + (rH - lbH) / 2, width: lW,      height: lbH)
+        outDurationSlider.frame  = CGRect(x: L + lW + sp,    y: y + (rH - slH) / 2, width: sliderW, height: slH)
+        outDurationField.frame   = CGRect(x: sliderRightX,   y: y + (rH - fH)  / 2, width: fW,      height: fH)
+        outDurationStepper.frame = CGRect(x: sliderRightX + fW + 2, y: y + (rH - stH) / 2, width: stW, height: stH)
+
+        y -= 4
+        y -= rH
+        outBounceLabel.frame   = CGRect(x: L,              y: y + (rH - lbH) / 2, width: lW,      height: lbH)
+        outBounceSlider.frame  = CGRect(x: L + lW + sp,    y: y + (rH - slH) / 2, width: sliderW, height: slH)
+        outBounceField.frame   = CGRect(x: sliderRightX,   y: y + (rH - fH)  / 2, width: fW,      height: fH)
+        outBounceStepper.frame = CGRect(x: sliderRightX + fW + 2, y: y + (rH - stH) / 2, width: stW, height: stH)
+
+        y -= 6; sep(8, y: &y, l: L, w: W - L - R); y -= 8
 
         // ── Hide Panel button — equal spacing top and bottom ─────────────────
-        // sep5_bottom ≈ 38, btn_h=22 → btn_y=(38-22)/2=8 → 8pt above and below
         let hW: CGFloat = 154
-        hidePanelButton.frame = CGRect(x: (W - hW) / 2, y: 16, width: hW, height: 22)
+        hidePanelButton.frame = CGRect(x: (W - hW) / 2, y: 14, width: hW, height: 22)
 
         statusLabel.frame = .zero
     }

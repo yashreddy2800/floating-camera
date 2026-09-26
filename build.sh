@@ -66,7 +66,7 @@ printf 'APPL????' > "$APP_BUNDLE/Contents/PkgInfo"
 [[ -f "$ICON_SRC" ]] && cp "$ICON_SRC" "$RESOURCES_DIR/AppIcon.icns"
 
 # ── Compile ───────────────────────────────────────────────────────────────────
-FLAGS=(-O -framework AppKit -framework AVFoundation -framework CoreMedia -framework Carbon)
+FLAGS=(-O -framework AppKit -framework AVFoundation -framework CoreMedia -framework Carbon -framework QuartzCore)
 
 if [[ "$ARCH" == "universal" ]]; then
     echo "▶  Compiling arm64 …"

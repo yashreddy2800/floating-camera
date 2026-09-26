@@ -100,6 +100,27 @@ After launching, an **aperture icon** appears in the menu bar. Click it to acces
 | Move to… | Snap to any corner of any connected screen |
 | Margins | Distance from each screen edge |
 
+### Animation Controls
+
+The **Camera Controls** panel now includes a full suite of animation settings, split into three logical groups:
+
+- **Overall Animation** – selects the default animation preset used when showing or hiding the camera overlay.
+- **In (Show) Animation** – controls the animation played when the overlay appears.
+- **Out (Hide) Animation** – controls the animation played when the overlay disappears.
+
+Each group provides:
+
+| Control | Type | Range / Options | Description |
+|---|---|---|---|
+| Animation Style | `NSPopUpButton` | Spring Pop, Overshoot Bounce, Smooth Ease, Subtle Zoom, Slide In (Top), Slide In (Bottom), System Shake, Pulse Attention, None | Choose the visual effect for the corresponding animation stage. |
+| Duration | `NSSlider` | 0.15 s – 1.00 s | Adjust how long the animation lasts. The range has been extended from 0.50 s to 1.00 s. |
+| Bounciness *(optional)* | `NSSlider` | 0 – 20 | For spring‑based presets, controls the overshoot amount. |
+
+> **Note:** The *Subtle Zoom* animation now correctly scales about the window’s exact centre, ensuring the circular preview does not drift left or right.
+
+All settings are persisted via `UserDefaults`, so your preferred animation style and speed are restored on launch.
+
+
 ## Keyboard Shortcuts
 
 Default shortcuts (customisable via **Shortcuts…** in the menu bar):
